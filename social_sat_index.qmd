@@ -1,0 +1,1070 @@
+---
+title: "Socioeconomic and Asset-Based Index in Humanitarian Contexts"
+title-block-banner: true
+format: html
+editor: visual
+date: 2025-08-28
+author: Steven et al.
+date-format: long
+html:
+    page-layout: custom
+execute: 
+  warning: false
+  message: false
+  echo: false
+  code-overflow: wrap
+  code-fold: true
+---
+
+```{css}
+#| echo: false
+p {
+  text-align: justify
+}
+```
+
+:::::: column-page
+#### Introduction
+
+Constructing a socio-economic and asset-based index from Refugee Monitoring Surveys (RMS) and Forced Displacement Surveys (FDS) provides a robust framework for assessing the welfare of displaced populations. Rooted in the literature on multidimensional poverty measurement, these indices build on established approaches such as the Demographic and Health Surveys (DHS) wealth index and the International Wealth Index (IWI), which use asset ownership, housing quality, and access to basic services as proxies for long-term economic status.
+
+RMS and FDS data extend this logic to forcibly displaced contexts by capturing socio-economic indicators specific to refugees, internally displaced persons (IDPs), and host populations. Developing an index from these sources enables comparability across groups and with national or international benchmarks derived from DHS and IWI. In doing so, it integrates humanitarian data into broader poverty and inequality debates, strengthens the evidence base for programmatic decision-making, and provides a systematic tool for monitoring progress toward durable solutions and self-reliance.
+
+Adapting DHS- and IWI-inspired methodologies to displacement data also represents a methodological innovation. Whereas traditional indices are built in relatively stable national contexts, forced displacement often involves sudden asset loss, mobility across borders, and reliance on humanitarian assistance —- factors that complicate conventional wealth measurement. A displacement-sensitive index addresses these challenges by incorporating indicators of vulnerability and resilience unique to refugee and host community experiences, while maintaining comparability with broader wealth index frameworks. In practice, this means complementing standard asset-based variables with displacement-specific dimensions such as drinking water access (e.g., source, location, reliability), electricity and lighting (e.g., access to grid or solar), sanitation and toilet facilities (e.g., type, sharing arrangements), housing and crowding (e.g., occupancy and density), size of their houses and number of buildings, food security (e.g., cooking facilities and energy sources), and tenure security (e.g., land ownership, rental arrangements, eviction risk). *Integrating these indicators above the traditional asset layer ensures that the index captures both structural deprivation and context-specific vulnerabilities of displaced, refugee, and host households.*
+
+#### Data Harmonization across surveys
+
+::: {.callout-tip icon="false"}
+This harmonization and alignment process is essential to preserve household-level data integrity while ensuring meaningful cross-survey comparability.
+:::
+
+To ensure robust and comparable wealth indices across FDS and RMS surveys while minimizing clumping (i.e., many households sharing identical profiles), we adopt a systematic approach:
+
+-   Identify aligned variables across surveys with comparable questions and labels - both semantically. For example:
+
+    -   (FDS) What source of electricity is used **most** of the time in this household? vs
+
+    -   (RMS) Does this household use anything for lighting?. And for value labels, see code block below.
+
+-   Harmonize definitions and coding; check for distributional shifts.
+
+-   Ensure consistency in categorical labels; drop or merge rare categories.
+
+-   Remove low-variance variables that add little discrimination.
+
+-   Transform skewed continuous variables (e.g., land, livestock) into categorical bins.
+
+-   Engineer composite indicators (e.g., asset count, living conditions score).
+
+-   Apply suitable estimators (e.g., polychoric PCA) for binary/ordinal data.
+
+These variables are then used to create a wealth index adapted from DHS methodology for refugee contexts based on PCA-derived weights.
+
+#### Country level vs International socioeconomic wealth indices
+
+The construction of socioeconomic and asset-based indices must balance three central objectives: *sufficient variance of the PC1 component*, *interpretability*, and *comparability*. These considerations shape the methodological choices when indices are developed for country-level analyses versus international applications.
+
+At the **country level socioeconomic wealth index**, indices typically favor a more detailed specification of variables. Greater granularity is achieved through the use of dummy variables for nominal categories and ranked variables for ordinal attributes, allowing the index to capture subtle differences in asset ownership and living conditions. This approach maximizes within-country variance and enables the detection of socioeconomic inequalities across subpopulations, such as regions within the same country and refugees vs host communities etc.. The emphasis, therefore, is on sensitivity and nuance, with the recognition that some variables may be highly context-specific and not readily transferable beyond the national setting.
+
+By contrast, an **international socioeconomic wealth index** must prioritize cross-country comparability and stability of the factor structure. To this end, variable selection is more restrictive: fewer, harmonized, and aggregated variables are used to ensure consistent interpretation across surveys and cultural contexts. This reduces measurement error arising from country-specific assets while providing more stable loadings in pooled principal component analyses. The resulting indices, such as the International Wealth Index (IWI), sacrifice some granularity in favor of broader comparability, thereby facilitating valid cross-country and temporal comparisons.
+
+:::: panel-tabset
+#### Country level socioeconomic and asset-based index
+
+```{r load_modules}
+
+rm(list=ls())
+# List of packages to load
+pkgs <- c(
+"fastDummies", "dplyr", "tidyr", "psych", "ggplot2",'unhcrthemes',
+'haven','sf','scales','plotly','ggstatsplot','ggpubr','ggbeeswarm','viridisLite',
+'statsExpressions'
+)
+# Install missing packages and load all packages
+invisible(lapply(pkgs, function(pkg) {
+if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+install.packages(pkg, dependencies = TRUE)
+library(pkg, character.only = TRUE)
+}
+}))
+
+# Define the categorical variables to select and dummy-encode
+categorical_vars <- c(
+  "drinking_water_source", "drinking_water_location", 
+  "electicity_or_light_source_most_used", "main_toilet_facility", "cooking_at_hh_level",  
+  "hh_cooking_source", "hh_cooking_fuel", "land_ownership", "landownership_legal_docs"
+)
+
+# Define the numerical/binary variables to include directly (e.g., pre-processed indicators)
+num_vars <- c(
+  "Improved_dw", "Improved_dw_final", "electricity", "shared_san_facility",  
+  "Improved_san", "crowding_cat", "Clean_cookingfuel"
+)
+
+# Function to process a dataset: create dummies, handle missing/zero-var, PCA, quintiles
+process_dataset <- function(file_path, dataset_type) {
+  # Read in the dataset
+  data <- read.csv(file_path)
+  
+  # Select categorical variables
+  subset_cat <- data %>% select(all_of(categorical_vars))
+  
+  # Create dummy variables
+  dummy_data <- dummy_cols(
+    subset_cat, 
+    select_columns = categorical_vars,
+    remove_selected_columns = TRUE,
+    remove_first_dummy = TRUE
+  )
+  
+  # Combine numerical variables with dummies
+  pca_df <- cbind(data[, num_vars], dummy_data)
+  
+  # Identify and remove columns with high missingness (>20%)
+  missing_summary <- pca_df %>%
+    summarise_all(~ sum(is.na(.))) %>%
+    pivot_longer(everything(), names_to = "column", values_to = "count_missing") %>%
+    mutate(prop_missing = round(count_missing / nrow(pca_df) * 100, 2)) %>%
+    filter(prop_missing > 20)
+  
+  if (nrow(missing_summary) > 0) {
+    pca_df <- pca_df %>% select(-all_of(missing_summary$column))
+    #cat("Removed columns with >20% missing in", dataset_type, ":", missing_summary$column, "\n")
+  } else {
+    invisible()
+    #cat("No columns with >20% missing values in", dataset_type, ".\n")
+  }
+  pca_df1 = pca_df
+  # Identify and remove variables with zero variation
+  zero_sd_vars <- sapply(pca_df, function(x) sd(x, na.rm = TRUE) == 0)
+  removed_zero_sd_vars <- names(pca_df)[zero_sd_vars]
+  
+  if (length(removed_zero_sd_vars) > 0) {
+    pca_df <- pca_df %>% select(-all_of(removed_zero_sd_vars))
+    #cat("Removed variables with zero variation in", dataset_type, ":", removed_zero_sd_vars, "\n")
+  } else {
+    invisible()
+    #cat("No variables with zero variation in", dataset_type, ".\n")
+  }
+
+#   # Filter ultra-rare / ultra-common binaries (stabilizes PC1)
+# is_bin <- sapply(pca_df, function(v) all(v %in% c(0,1)))
+# prev   <- sapply(pca_df[, is_bin, drop=FALSE], function(v) mean(v, na.rm = TRUE))
+# keep_bins <- names(prev)[prev >= 0.01 & prev <= 0.99]   # tweak thresholds if needed
+# pca_df <- bind_cols(
+#   pca_df[, !is_bin, drop=FALSE],
+#   pca_df[, keep_bins, drop=FALSE]
+# )
+  
+  # Perform PCA
+  pca_result <- principal(
+    pca_df, 
+    rotate = "varimax", 
+    nfactors = 1, 
+    covar = TRUE, 
+    cor = "mixed",
+    scores = TRUE
+  )
+  
+# PCA Vaccounted
+cat("The  PCA Vaccounted is:", round((pca_result$Vaccounted[2])*100,2), "\n")
+scores <- as.numeric(pca_result$scores[,1])
+ties     <- sum(duplicated(round(scores, 4)))
+cat(" tied scores:", ties, "\n")
+
+  # Add PCA scores, population groups annd other relevant variables
+  pca_df <- pca_df %>% 
+    mutate(
+        comscore = pca_result$scores[, 1],
+        pop_groups = data$pop_groups,
+        lat = data$lat,
+        lon = data$lon,
+        id = data$id,
+        interviewdate = data$interviewdate,
+        living_conditions_score  = data$living_conditions_score,
+        living_conditions_category = data$living_conditions_category
+    ) %>% 
+    filter(!is.na(lat)) %>% 
+    filter(!is.na(lon))
+  
+  # Filter NA scores and create quintiles
+  final_data <- pca_df %>%
+    filter(!is.na(comscore)) %>%
+    mutate(
+      Quintile = ntile(comscore, 5),
+      Quintile = factor(Quintile, levels = 1:5, 
+                        labels = c("Poorest", "Second", "Middle", "Fourth", "Richest")),
+      type = dataset_type
+    )
+  paste0('The dimension of data is: ',dim(pca_df1))
+  return(final_data)
+}
+
+
+
+```
+
+::: panel-tabset
+<br>
+
+<br>
+
+```{r process_data}
+#| layout-ncol: 2
+#| fig-cap: 
+#|   - "RMS"
+#|   - "FDS"
+#|   
+# Process RMS dataset
+#main_rms_final <- process_dataset('aligned_data/main_rms_subset.csv', 'rms')
+
+# rescale comscore based on Jeroen Smits and  Roel Steendijk  IWI paper.
+# Raw Score Range:
+# 
+# Minimum: -2.318 (households with lowest values on all assets)
+# Maximum: 6.953 (households with highest values on all assets)
+# 
+# IWI = 100 × (Raw Score + 2.318) / 9.271
+# 
+# IWI = 25.004 + Σ(rescaled weight × asset indicator)
+# 
+# The IWI scale runs from 0 to 100: 
+# 
+
+dt = read.csv('main_rms_subset.csv') |> 
+  select(-c("X_geopoint_longitude", "X_geopoint_latitude", 'lon','lat'))
+
+#write.csv(dt,'data.csv')
+#   
+main_rms_final <- process_dataset('main_rms_subset.csv', 'rms')
+main_rms_final$comscore_raw = main_rms_final$comscore
+min_score_rms = min(main_rms_final$comscore)
+max_score_rms = max(main_rms_final$comscore)
+scale_value_denom = max_score_rms + abs(min_score_rms)
+
+main_rms_final = main_rms_final %>% 
+  mutate(comscore = ((comscore + abs(min_score_rms))/ scale_value_denom)*100)
+
+
+main_rms_final_suset = main_rms_final[,c("id","interviewdate", "pop_groups" ,"lat", "lon", "comscore", "Quintile", "type" )]
+names(main_rms_final_suset) = c("id","interviewdate", "pop_groups" ,"lat", "lon", "wealth_index", "wealth_category","data_source" )
+write.csv(main_rms_final_suset,'main_rms_with_wealth_index.csv',row.names = F)
+
+
+# Process FDS dataset
+main_fds_final <- process_dataset('main_fds_subset1.csv', 'fds')
+main_fds_final$comscore_raw = main_fds_final$comscore
+min_score_fds = min(main_fds_final$comscore)
+max_score_fds = max(main_fds_final$comscore)
+scale_value_denom_fds = max_score_fds + abs(min_score_fds)
+
+main_fds_final = main_fds_final %>% 
+  mutate(comscore = ((comscore + abs(min_score_fds))/ scale_value_denom_fds)*100)
+
+main_fds_final_suset = main_fds_final[,c("id","interviewdate", "pop_groups" ,"lat", "lon", "comscore", "Quintile", "type", "living_conditions_score",  "living_conditions_category")]
+names(main_fds_final_suset) = c("id","interviewdate", "pop_groups" ,"lat", "lon", "wealth_index", "wealth_category","data_source","living_conditions_score",  "living_conditions_category" )
+write.csv(main_fds_final_suset,'main_fds_with_wealth_index.csv',row.names = F)
+
+ 
+# 5325   69 RMS
+# 
+# 2893   78 FDS
+
+
+# Combine both datasets for a joint plot
+vars = c('id','interviewdate',"comscore_raw", "comscore", "pop_groups", "Quintile", "type","lat", "lon","living_conditions_score",  "living_conditions_category")
+combined_data <- rbind(main_rms_final[,vars], main_fds_final[,vars])
+
+
+write.csv(combined_data,'fds_rms_wealth_index_with_complete.csv',row.names = F)
+
+
+
+combined_data = combined_data %>% 
+  mutate(pop_groups = ifelse(pop_groups == "Refugee returnees", 
+                                   "Refugee returnees", pop_groups),
+        pop_groups = ifelse(pop_groups == "host community member", 
+                                   "Host community members",  pop_groups),
+        pop_groups = ifelse(pop_groups == "refugee", 
+                                   "Refugees",  pop_groups),
+        Group = ifelse(type == "fds", "FDS_SSD",  'RMS_SSD')
+        )
+```
+
+##### South Sudan
+
+------------------------------------------------------------------------
+
+###### Comparison of FDS and RMS
+
+------------------------------------------------------------------------
+
+```{r rescaling_iwi_indices}
+
+
+# combined_data_cbd_rms_fds = rbind(combined_data[, c("Group","comscore")],wealth_index_cmr[, c("Group","comscore")])
+
+combined_data_cbd_rms_fds = rbind(combined_data[, c("Group","comscore","living_conditions_score",  "living_conditions_category")])
+
+combined_data_cbd_rms_fds =  combined_data_cbd_rms_fds |> 
+   mutate(Group = ifelse(Group=='FDS_SSD','FDS South Sudan', Group),
+ Group = ifelse(Group=='RMS_SSD','RMS South Sudan', Group))#,
+ #Group = ifelse(Group=='FDS_CMR','FDS Cameroon', Group))
+
+
+ggplot(data = combined_data_cbd_rms_fds, aes(x = '', y = comscore, fill = Group)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = 1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~ Group) + #, scales = "free_y") +
+  scale_fill_manual(values = c("RMS South Sudan" = "#1184b1ff", "FDS South Sudan" = "#00B398")) + #,"FDS Cameroon" = "#1184b1ff")) +
+  ylab("Rescaled wealth index") +
+  xlab("Survey") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank())
+
+ # unhcrthemes::theme_unhcr() #+
+ # guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black")))
+# ggsave("wealth_index_comparisons_fds_dhs_rms.svg", plot = plot, width = 12, height = 8)
+
+# ggplot(data = combined_data_cbd_rms_fds, aes(x = Group, y = comscore, fill = Group)) +
+#   geom_violin(alpha = 0.7, color = "black", trim = FALSE) +
+#   geom_boxplot(width = 0.2, outlier.size = 1, color = "black", fill = "white", alpha = 0.8, show.legend = FALSE) +
+#   # scale_fill_manual(values = c("Refugees South" = "#1f5582", 
+#   #                              "Refugees North" = "#5a9bd4", 
+#   #                              "Host Community North" = "#2d4a66")) +
+#   scale_fill_manual(values = c("RMS_SSD" = "#FAEB00", "FDS_SSD" = "#00B398","FDS_CMR" = "#1184b1ff"))+
+#   ylab("Rescaled wealth index") +
+#   xlab("Survey") +
+#   theme_minimal() +
+#   theme(legend.position = "none",
+#         panel.grid.major.x = element_blank(),
+#         panel.grid.minor = element_blank())
+
+
+```
+
+------------------------------------------------------------------------
+
+###### WI by population group
+
+------------------------------------------------------------------------
+
+<br>
+
+FDS South sudan
+
+```{r fds_ssd}
+
+# combined_data_cbd_rms_fds = rbind(dhs_data[, c("Group","comscore")],combined_data[, c("Group","comscore")])
+combined_data_rms = combined_data %>% 
+  filter(Group=='FDS')
+
+combined_data_FDS_SSD = combined_data %>% 
+  filter(Group=='FDS_SSD')
+
+ggplot(data = combined_data_FDS_SSD, aes(x = "", y = comscore, fill=pop_groups)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = 1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("Host community members" = "#063c67ff", "Refugees" = "#72b1e9ff")) +
+  facet_wrap(~ pop_groups) + #, scales = "free_y") +
+  ylab("Rescaled wealth index") +
+  xlab("Survey") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  theme(legend.position = "none") #+
+ # guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black")))
+# ggsave("wealth_index_comparisons_fds_dhs_rms.svg", plot = plot, width = 12, height = 8)
+
+
+res <- combined_data_FDS_SSD %>%
+  group_by(pop_groups) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res)
+
+
+```
+
+<br>
+
+```{r}
+combined_data_FDS_SSD$living_conditions_category = ifelse(combined_data_FDS_SSD$living_conditions_score>=3,'Good living conditions','Poor living conditions')
+res <- combined_data_FDS_SSD %>%
+  group_by(living_conditions_category) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res)
+
+res = t.test(comscore ~ living_conditions_category, data = combined_data_FDS_SSD)
+cat('Statistical significance (t-test) ~ ',res$p.value)
+
+```
+
+```{r}
+# res = broom::tidy(t.test(comscore ~ living_conditions_category, data = combined_data_FDS_SSD)) |> 
+#   select('estimate1','estimate2','p.value')
+
+# knitr::kable(round(res,2), col.names = c('Good living conditions','Poor living conditions','p.value'))
+```
+
+<br> RMS South Sudan
+
+```{r rms_ssd}
+combined_data_RMS_SSD = combined_data %>% 
+  filter(Group=='RMS_SSD')
+
+ggplot(data = combined_data_RMS_SSD, aes(x = "", y = comscore, fill=pop_groups)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = 1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("IDPs" = "#063c67ff", "Refugee returnees" = "#72b1e9ff")) +
+  facet_wrap(~ pop_groups) + #, scales = "free_y") +
+  ylab("Rescaled wealth index") +
+  xlab("Survey") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  theme(legend.position = "none")
+
+
+res <- combined_data_RMS_SSD %>%
+  group_by(pop_groups) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res)
+
+
+```
+
+<br>
+
+```{r}
+# combined_data_RMS_SSD$living_conditions_category = ifelse(combined_data_RMS_SSD$living_conditions_score>=3,'Good living conditions','Poor living conditions')
+# res <- combined_data_RMS_SSD %>%
+#   group_by(living_conditions_score) %>%
+#   summarise(
+#     n = n(),
+#     mean = round(mean(comscore, na.rm = TRUE),1),
+#     sd = round(sd(comscore, na.rm = TRUE),1),
+#     median = round(median(comscore, na.rm = TRUE),1),
+#     Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+#     Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+#     min = round(min(comscore, na.rm = TRUE),1),
+#     max = round(max(comscore, na.rm = TRUE),1),
+#     .groups = "drop"
+#   )
+
+# knitr::kable(res)
+
+# t.test(comscore ~ living_conditions_category, data = combined_data_RMS_SSD)
+
+```
+
+<br>
+
+###### FDS WI index (w/o asset variables)
+
+Wealth Index with and without asset variables - for FDS data only.
+
+-   Asset ownership is a central driver of household wealth status.
+
+-   Excluding asset variables leads to a low and clumped distribution of the wealth index, with limited discriminatory power.
+
+-   Incorporating asset variables produces a more dispersed index, reducing clumping and better differentiating households.
+
+-   Regional differences are evident, with the South scoring higher on both the composite wealth index and the socioeconomic index.
+
+```{r}
+wealth_index_with_assets = read.csv('main_WI_fds_assets_with_wealth_index.csv') %>% filter(comscore >-2) # there is an outright outlier of -3..it affects rescaling of the wealth incdex.
+
+
+# Calculate living_conditions_score
+living_conditions_index = wealth_index_with_assets[,c('Improved_dw' , 'Improved_dw_final', 'electricity' , 'Clean_cookingfuel', 'Improved_san','crowding_cat')]
+wealth_index_with_assets$living_conditions_score <- rowSums(living_conditions_index, na.rm = TRUE)
+wealth_index_with_assets$living_conditions_category = ifelse(wealth_index_with_assets$living_conditions_score>=2,'Good living conditions','Poor living conditions')
+
+asset_score = wealth_index_with_assets |> select(starts_with("Assets"))
+wealth_index_with_assets$asset_score = rowSums(asset_score, na.rm = TRUE)
+wealth_index_with_assets$asset_category = ifelse(wealth_index_with_assets$asset_score>=5,'Good living conditions','Poor living conditions')
+
+min_score_fds_asset_vars = min(wealth_index_with_assets$comscore)
+max_score_fds_asset_vars = max(wealth_index_with_assets$comscore)
+scale_value_denom_fds_asset_vars = max_score_fds_asset_vars + abs(min_score_fds_asset_vars)
+
+wealth_index_with_assets = wealth_index_with_assets %>% 
+  mutate(comscore = ((comscore + abs(min_score_fds_asset_vars))/ scale_value_denom_fds_asset_vars)*100)
+
+
+combined_data_socio_econ = combined_data 
+
+combined_data_socio_econ <- combined_data_socio_econ %>%
+  rename_with(~ paste0(., "_socio_econ_index"), -1) %>%
+  rename(ID = 1)
+
+wealth_index_with_assets1 <- wealth_index_with_assets %>% 
+  left_join(combined_data_socio_econ,by='ID') %>% 
+  filter(!is.na(comscore_socio_econ_index))
+
+# Join and filter the data
+wealth_index_with_assets1 <- wealth_index_with_assets %>%
+  left_join(combined_data_socio_econ, by = "ID") %>%
+  filter(!is.na(comscore_socio_econ_index)) #%>% 
+  #filter(comscore>=-1)
+
+
+
+res <- wealth_index_with_assets1 %>% 
+  group_by(Region) %>% 
+  summarise(`Average comscore` = mean(comscore,na.rm = T),
+            #std_comscore = sd(comscore,na.rm = T),
+            `Average comscore socio econ index` = mean(comscore_socio_econ_index,na.rm = T),
+            #std_comscore_socio_econ_index = sd(comscore_socio_econ_index,na.rm = T)
+            )
+
+knitr::kable(res)
+
+
+df_combined <- bind_rows(
+  wealth_index_with_assets1 %>%
+    transmute(index = comscore, Variable_type = "With asset variables"),
+  
+  wealth_index_with_assets1 %>%
+    transmute(index = comscore_socio_econ_index, Variable_type = "No asset variables")
+) 
+
+
+
+ggplot(data = df_combined, aes(x = "", y = index, fill = Variable_type)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = -1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("With asset variables" = "#276c9eff", "No asset variables" = "#249181ff")) +
+  facet_wrap(~ Variable_type)+#, scales = "free_y") +
+  #ylim(-0.3,0.3) +
+  ylab("Wealth index") +
+  xlab("") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black"))) +
+  theme(legend.position = "none")
+
+
+
+```
+
+<br>
+
+-   Improved living conditions, including housing quality, sanitation, and energy access, capture the quality and high socioeconomic index.
+
+```{r}
+
+# Calculate living_conditions_score
+living_conditions_index = wealth_index_with_assets[,c('Improved_dw' , 'Improved_dw_final', 'electricity' , 'Clean_cookingfuel', 'Improved_san','crowding_cat')]
+wealth_index_with_assets$living_conditions_score <- rowSums(living_conditions_index, na.rm = TRUE)
+wealth_index_with_assets$living_conditions_category = ifelse(wealth_index_with_assets$living_conditions_score>=2,'Good living conditions','Poor living conditions')
+
+res_liv_cond_ssd <- wealth_index_with_assets %>%
+  group_by(living_conditions_category) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res_liv_cond_ssd)
+
+
+
+res = t.test(comscore ~ living_conditions_category, data = wealth_index_with_assets)
+cat('Statistical significance (t-test) ~ ',res$p.value)
+
+ggplot(data = wealth_index_with_assets, aes(x = "", y = comscore, fill = living_conditions_category)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = -1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("Good living conditions" = "#276c9eff", "Poor living conditions" = "#249181ff")) +
+  facet_wrap(~ living_conditions_category)+#, scales = "free_y") +
+  #ylim(-0.3,0.3) +
+  ylab("Wealth index") +
+  xlab("") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black"))) +
+  theme(legend.position = "none")
+
+```
+
+-   Households with 5+ assets: Scores are more spread out, showing greater discrimination.
+
+-   Households with fewer than 5 assets: Scores are tightly packed, showing little variation - strong clumping.
+
+```{r}
+
+asset_score = wealth_index_with_assets |> select(starts_with("Assets"))
+wealth_index_with_assets$asset_score = rowSums(asset_score, na.rm = TRUE)
+wealth_index_with_assets$asset_category = ifelse(wealth_index_with_assets$asset_score>=5,'Assets (5+)','Assets (<5)')
+
+
+res_assets_ssd <- wealth_index_with_assets %>%
+  group_by(asset_category) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res_assets_ssd)
+
+res = t.test(comscore ~ asset_category, data = wealth_index_with_assets)
+cat('Statistical significance (t-test) ~ ',res$p.value)
+
+
+ggplot(data = wealth_index_with_assets, aes(x = "", y = comscore, fill = asset_category)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = -1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("Assets (5+)" = "#276c9eff", "Assets (<5)" = "#249181ff")) +
+  facet_wrap(~ asset_category)+#, scales = "free_y") +
+  #ylim(-0.3,0.3) +
+  ylab("Wealth index") +
+  xlab("") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black"))) +
+  theme(legend.position = "none")
+
+res_liv_cond_ssd$cntry = 'ssd'
+res_assets_ssd$cntry = 'ssd'
+```
+
+##### Cameroon
+
+```{r cameroon}
+
+wealth_index_cmr = read.csv('main_WI_fds_assets_with_wealth_index_cmr.csv') 
+
+min_score_fds_asset_vars = min(wealth_index_cmr$wealth_pc1)
+max_score_fds_asset_vars = max(wealth_index_cmr$wealth_pc1)
+scale_value_denom_fds_cmr_asset_vars = max_score_fds_asset_vars + abs(min_score_fds_asset_vars)
+
+wealth_index_cmr = wealth_index_cmr %>% 
+  mutate(comscore = ((wealth_pc1 + abs(min_score_fds_asset_vars))/ scale_value_denom_fds_cmr_asset_vars)*100,
+  Group = 'FDS_CMR',
+  Group = ifelse(Group=='FDS_CMR','FDS Cameroon', Group),
+  pop_groups = ifelse(pop_groups == "host community member", 
+                                   "Host community members", pop_groups),
+  pop_groups = ifelse(pop_groups == "refugee", 
+                                   "Refugees", pop_groups)
+
+  )
+
+ggplot(data = wealth_index_cmr, aes(x = "", y = comscore, fill=Group)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = 1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+ scale_fill_manual(values = c("FDS Cameroon" = "#1184b1ff")) +
+  facet_wrap(~ Group) + #, scales = "free_y") +
+  ylab("Rescaled wealth index") +
+  xlab("Survey") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  theme(legend.position = "none")
+
+```
+
+```{r}
+# res = wealth_index_cmr %>% 
+#   group_by(pop_groups) %>% 
+#   summarise(Average = round(mean(comscore,na.rm = T),1),
+#             Median = round(median(comscore,na.rm = T),1),
+#             percentile_75 = round(quantile(comscore, 0.75),1),
+#             percentile_80 = round(quantile(comscore, 0.80),1),
+#             percentile_85 = round(quantile(comscore, 0.85),1)
+#                   )
+
+# Summary statistics
+res <- wealth_index_cmr %>%
+  group_by(pop_groups) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res)
+
+```
+
+Population group
+
+```{r}
+
+ggplot(data = wealth_index_cmr, aes(x = "", y = comscore, fill=pop_groups)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = 1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+ scale_fill_manual(values = c("Host community members" = "#063c67ff", "Refugees" = "#72b1e9ff")) +
+  facet_wrap(~ pop_groups) + #, scales = "free_y") +
+  ylab("Rescaled wealth index") +
+  xlab("Survey") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  theme(legend.position = "none")
+
+```
+
+<br>
+
+```{r}
+
+wealth_index_cmr$living_conditions_category = ifelse(wealth_index_cmr$living_conditions_score >=2,'Good living conditions','Poor living conditions')
+
+res_liv_cond_cmr <- wealth_index_cmr %>%
+  group_by(living_conditions_category) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res_liv_cond_cmr)
+
+res = t.test(comscore ~ living_conditions_category, data = wealth_index_cmr)
+cat('Statistical significance (t-test) ~ ',res$p.value)
+
+ggplot(data = wealth_index_cmr, aes(x = "", y = comscore, fill = living_conditions_category)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = -1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("Good living conditions" = "#276c9eff", "Poor living conditions" = "#249181ff")) +
+  facet_wrap(~ living_conditions_category)+#, scales = "free_y") +
+  #ylim(-0.3,0.3) +
+  ylab("Wealth index") +
+  xlab("") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black"))) +
+  theme(legend.position = "none")
+
+```
+
+-   Households with 5+ assets: Scores are more spread out, showing greater discrimination.
+
+-   Households with fewer than 5 assets: Scores are tightly packed, showing little variation - strong clumping.
+
+```{r}
+
+# asset_score = wealth_index_with_assets |> select(starts_with("Assets"))
+# wealth_index_with_assets$asset_score = rowSums(asset_score, na.rm = TRUE)
+wealth_index_cmr$asset_category = ifelse(wealth_index_cmr$asset_score >= 5,'Assets (5+)','Assets (<5)')
+
+
+res_assets_cmr <- wealth_index_cmr %>%
+  group_by(asset_category) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res_assets_cmr)
+
+res = t.test(comscore ~ asset_category, data = wealth_index_cmr)
+cat('Statistical significance (t-test) ~ ',res$p.value)
+
+
+ggplot(data = wealth_index_cmr, aes(x = "", y = comscore, fill = asset_category)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = -1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("Assets (5+)" = "#276c9eff", "Assets (<5)" = "#249181ff")) +
+  facet_wrap(~ asset_category)+#, scales = "free_y") +
+  #ylim(-0.3,0.3) +
+  ylab("Wealth index") +
+  xlab("") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black"))) +
+  theme(legend.position = "none")
+
+res_liv_cond_cmr$cntry = 'cmr'
+res_assets_cmr$cntry = 'cmr'
+
+assets_values = rbind(res_assets_ssd,res_assets_cmr) |> data.frame()
+living_cond = rbind(res_liv_cond_ssd,res_liv_cond_cmr) |> data.frame()
+
+res_summary = data.frame("Assets_ownership"=c(assets_values$asset_category[1], assets_values$asset_category[2]),
+SSD=c(assets_values$mean[1], assets_values$mean[2]),
+CMR=c(assets_values$mean[3], assets_values$mean[4]))
+
+knitr::kable(res_summary, col.names = c('Assets ownership','South Sudan','Cameroon'))
+
+
+res_summary = data.frame("Living condition"=c(living_cond$living_conditions_category[1], living_cond$living_conditions_category[2]),
+SSD=c(living_cond$mean[1], living_cond$mean[2]),
+CMR=c(living_cond$mean[3], living_cond$mean[4]))
+
+knitr::kable(res_summary, col.names = c('Living condition','South Sudan','Cameroon'))
+
+```
+:::
+
+| Category             | Subcategory            | South Sudan | Cameroon |
+|----------------------|------------------------|-------------|----------|
+| **Assets ownership** | Assets (5+)            | 49.9        | 41.3     |
+|                      | Assets (\<5)           | 41.1        | 16.3     |
+| **Living condition** | Good living conditions | 46.0        | 23.5     |
+|                      | Poor living conditions | 44.5        | 11.1     |
+
+#### International level socioeconomic and asset-based index
+
+```{r}
+wealth_index_ssd_cmr = read.csv('wealth_index_ssd_cmr.csv')
+
+ggplot(data = wealth_index_ssd_cmr, aes(x = "", y = comscore, fill=Group)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = 1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("IWI" = "#1184b1ff")) +
+  facet_wrap(~ Group) + #, scales = "free_y") +
+  ylab("Rescaled wealth index") +
+  xlab("Survey") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  theme(legend.position = "none")
+
+
+ggplot(data = wealth_index_ssd_cmr, aes(x = "", y = comscore, fill=country)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = 1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c( "CMR" = "#249181ff","SSD" = "#1184b1ff")) +
+  facet_wrap(~ country) + #, scales = "free_y") +
+  ylab("Rescaled wealth index") +
+  xlab("Survey") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  theme(legend.position = "none")
+
+
+```
+
+<br>
+
+```{r}
+
+wealth_index_ssd_cmr$living_conditions_category = ifelse(wealth_index_ssd_cmr$living_conditions_score >=2,'Good living conditions','Poor living conditions')
+
+res_liv_cond_cmr_ssd <- wealth_index_ssd_cmr %>%
+  group_by(living_conditions_category) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res_liv_cond_cmr_ssd)
+
+res = t.test(comscore ~ living_conditions_category, data = wealth_index_ssd_cmr)
+cat('Statistical significance (t-test) ~ ',res$p.value)
+
+ggplot(data = wealth_index_ssd_cmr, aes(x = "", y = comscore, fill = living_conditions_category)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = -1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("Good living conditions" = "#276c9eff", "Poor living conditions" = "#249181ff")) +
+  facet_wrap(~ living_conditions_category)+#, scales = "free_y") +
+  #ylim(-0.3,0.3) +
+  ylab("Wealth index") +
+  xlab("") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black"))) +
+  theme(legend.position = "none")
+
+```
+
+```{r}
+
+# asset_score = wealth_index_with_assets |> select(starts_with("Assets"))
+# wealth_index_with_assets$asset_score = rowSums(asset_score, na.rm = TRUE)
+wealth_index_ssd_cmr$asset_category = ifelse(wealth_index_ssd_cmr$asset_score >= 5,'Assets (5+)','Assets (<5)')
+
+
+res_assets_cmr_ssd <- wealth_index_ssd_cmr %>%
+  group_by(asset_category) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(comscore, na.rm = TRUE),1),
+    sd = round(sd(comscore, na.rm = TRUE),1),
+    median = round(median(comscore, na.rm = TRUE),1),
+    Q1 = round(quantile(comscore, 0.25, na.rm = TRUE),1),
+    Q3 = round(quantile(comscore, 0.75, na.rm = TRUE),1),
+    min = round(min(comscore, na.rm = TRUE),1),
+    max = round(max(comscore, na.rm = TRUE),1),
+    .groups = "drop"
+  )
+
+knitr::kable(res_assets_cmr_ssd)
+
+res = t.test(comscore ~ asset_category, data = wealth_index_ssd_cmr)
+cat('Statistical significance (t-test) ~ ',res$p.value)
+
+
+ggplot(data = wealth_index_ssd_cmr, aes(x = "", y = comscore, fill = asset_category)) +
+  scale_fill_viridis_d(option = "D") +
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_boxplot(outlier.size = -1, color = "black", lwd = 1, alpha = 0.7, show.legend = FALSE) +
+  scale_fill_manual(values = c("Assets (5+)" = "#276c9eff", "Assets (<5)" = "#249181ff")) +
+  facet_wrap(~ asset_category)+#, scales = "free_y") +
+  #ylim(-0.3,0.3) +
+  ylab("Wealth index") +
+  xlab("") +
+  theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black"))) +
+  theme(legend.position = "none")
+
+
+renv::snapshot()
+```
+
+::::
+#### Notes:
+
+Distribution of Household Asset Ownership by Country
+
+```{r}
+
+ggplot(wealth_index_ssd_cmr, aes(x = asset_count, fill = country)) +
+  geom_histogram(binwidth = 1, color = "white", alpha = 0.8, position = "identity") +
+  scale_fill_manual(values = c("SSD" = "#0072BC", "CMR" = "#00B398")) +
+  facet_wrap(~ country, ncol = 1, scales = "free_y") +
+  labs(
+   # title = "Distribution of Household Asset Ownership by Country",
+    x = "Number of Assets",
+    y = "Number of Households",
+    fill = "Country"
+  ) +
+ theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black"))) +
+  theme(legend.position = "none")
+
+
+```
+
+Living condition by Country
+
+```{r}
+
+ggplot(wealth_index_ssd_cmr, aes(x = living_conditions_score, fill = country)) +
+  geom_histogram(binwidth = 1, color = "white", alpha = 0.8, position = "identity") +
+  scale_fill_manual(values = c("SSD" = "#0072BC", "CMR" = "#00B398")) +
+  facet_wrap(~ country, ncol = 1, scales = "free_y") +
+  labs(
+   # title = "Distribution of Household Asset Ownership by Country",
+    x = "Number of Assets",
+    y = "Number of Households",
+    fill = "Country"
+  ) +
+ theme_minimal() +
+  unhcrthemes::theme_unhcr() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1, color = "black"))) +
+  theme(legend.position = "none")
+
+
+```
+
+- Household essentials + appliances + ICT/entertainment - core discriminators of welfare in the lower tail of wealth distribution.
+
+- Luxury/status items - high-variance indicators, aimed at driving the upper tail of the wealth distribution.
+
+- Farm tools/livestock/transport - important in rural/agricultural contexts,production capacity.
+
+- Personal items (shoes, watches) - additional good basic welfare markers, partly luxury.
+
+
+| **Category**                  | **Assets** |
+|--------------------------------|-------------|
+| **Household Essentials**       | Bed; Mattress; Chair; Sofa; Table phone; Wall clock; Stove/kanun (traditional); Gas (or kerosene) cooker; Grinding stone; Tools for lighting (solar lamp, torch, etc.) |
+| **Household Appliances & Utilities** | Washing machine; Refrigerator; Freezer; Fan; Room-cooler; Air conditioner; Mixer / blender; Sewing machine; Generator; Solar panel (any size); Water pump |
+| **Information, Communication & Entertainment** | Television; Radio; CD / DVD player; Camera (non-phone); Modem / router; Cable connection; Satellite dish; Laptop / computer; Mobile phone; Smartphone |
+| **Luxury / Status Items**      | Washing machine*; Air conditioner; Camera (beyond phone); Satellite dish; Cable; Car; Truck |
+| **Farm Tools & Implements**    | Hoe; Maloda; Axe; Panga; Harrow; Spade; Ridger; Cultivators; Spreaders; Spraying cans; Plough (oxen); Diesel-driven irrigation system; Seeds for planting |
+| **Transport Assets**           | Bicycle; Motorcycle / motor scooter; Car; Truck; Tractor; Boat without motor / canoe |
+| **Livestock & Animals**        | Milk cows / bulls; Other cattle; Goats; Sheep; Pigs; Horses, donkeys, or mules; Barnyard animals (poultry, rabbits, etc.) |
+| **Personal Items**             | Pair of shoes; Hand watch |
+
+::::::
+
+<br>
